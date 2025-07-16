@@ -48,20 +48,29 @@ void serial_task(void *pvParameter) {
 
     // Process data from the main UART
     if (length > 0) {
+      char last_char = 0;
       for (int i = 0; i < length; i++) {
         char incoming_char = (char)data[i];
-
-        if (incoming_char == '\n' || incoming_char == '\r') {
-          serial_buffer[index] = '\0';
+        if ((incoming_char == '\n' || incoming_char == '\r')) {
           if (index > 0) {
+            serial_buffer[index] = '\0';
             handle_serial_command(serial_buffer);
             index = 0;
           }
+          // Ignore a second line ending in a row (handles \r\n and \n\r)
+          if ((last_char == '\r' && incoming_char == '\n') ||
+              (last_char == '\n' && incoming_char == '\r')) {
+            last_char = incoming_char;
+            continue;
+          }
         } else if (index < SERIAL_BUFFER_SIZE - 1) {
           serial_buffer[index++] = incoming_char;
+          printf("%c", incoming_char); // Echo the character
         } else {
+          printf("Serial buffer overflow, input too long!\n");
           index = 0;
         }
+        last_char = incoming_char;
       }
     }
 
@@ -81,7 +90,11 @@ void serial_task(void *pvParameter) {
 void serial_manager_init() {
   // UART configuration for main UART
   const uart_config_t uart_config = {
+#ifdef CONFIG_USE_TDECK
+      .baud_rate = 19200,
+#else
       .baud_rate = 115200,
+#endif
       .data_bits = UART_DATA_8_BITS,
       .parity = UART_PARITY_DISABLE,
       .stop_bits = UART_STOP_BITS_1,
