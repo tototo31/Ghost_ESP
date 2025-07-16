@@ -585,7 +585,10 @@ esp_err_t ap_manager_init(void) {
         printf("DHCP server configured successfully.\n");
     }
 
+    ESP_LOGI(TAG, "Free heap before wifi start: %ld bytes\n", esp_get_free_heap_size());
     ret = esp_wifi_start();
+    ESP_LOGI(TAG, "Free heap after wifi start: %ld bytes\n", esp_get_free_heap_size());
+
     if (ret != ESP_OK) {
         printf("esp_wifi_start failed: %s\n", esp_err_to_name(ret));
         return ret;
@@ -601,24 +604,35 @@ esp_err_t ap_manager_init(void) {
         esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL));
 
     // Initialize mDNS
+    ESP_LOGI(TAG, "Free heap before mDNS server: %ld bytes\n", esp_get_free_heap_size());
     ret = setup_mdns();
+    ESP_LOGI(TAG, "Free heap after mDNS server: %ld bytes\n", esp_get_free_heap_size());
+
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to setup mDNS");
         return ret;
     }
 
     // Start HTTP server
+    ESP_LOGI(TAG, "Free heap before HTTP server config: %ld bytes\n", esp_get_free_heap_size());
     ret = load_server_config();
+    ESP_LOGI(TAG, "Free heap after HTTP server config: %ld bytes\n", esp_get_free_heap_size());
+
     if (ret != ESP_OK) {
         printf("Error loading server config\n");
         return ret;
     }
 
+    ESP_LOGI(TAG, "Free heap before HTTP server: %ld bytes\n", esp_get_free_heap_size());
     ret = start_http_server();
+    ESP_LOGI(TAG, "Free heap after HTTP server: %ld bytes\n", esp_get_free_heap_size());
+
     if (ret != ESP_OK) {
         printf("Error starting HTTP server\n");
         return ret;
     }
+
+    ret = start_http_server();
 
     esp_wifi_set_ps(WIFI_PS_NONE);
 
