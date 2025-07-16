@@ -902,6 +902,7 @@ esp_err_t ble_unregister_handler(ble_data_handler_t handler) {
 }
 
 void ble_init(void) {
+        printf("Free heap before BLE init: %ld bytes\n", esp_get_free_heap_size());
 #ifndef CONFIG_IDF_TARGET_ESP32S2
     if (!ble_initialized) {
         esp_err_t ret = nvs_flash_init();
