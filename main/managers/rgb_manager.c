@@ -128,93 +128,101 @@ esp_err_t rgb_manager_init(RGBManager_t *rgb_manager, gpio_num_t pin,
                            int num_leds, led_pixel_format_t pixel_format,
                            led_model_t model, gpio_num_t red_pin,
                            gpio_num_t green_pin, gpio_num_t blue_pin) {
-  if (!rgb_manager)
+#if defined(CONFIG_NUM_LEDS) && (CONFIG_NUM_LEDS < 1)
+    ESP_LOGW(TAG, "RGBManager not initialized: CONFIG_NUM_LEDS < 1");
     return ESP_ERR_INVALID_ARG;
+#endif
+    if (!rgb_manager)
+        return ESP_ERR_INVALID_ARG;
+    if (num_leds < 1) {
+        ESP_LOGW(TAG, "RGBManager not initialized: num_leds < 1");
+        return ESP_ERR_INVALID_ARG;
+    }
 
-  rgb_manager->pin = pin;
-  rgb_manager->num_leds = num_leds;
-  rgb_manager->red_pin = red_pin;
-  rgb_manager->green_pin = green_pin;
-  rgb_manager->blue_pin = blue_pin;
+    rgb_manager->pin = pin;
+    rgb_manager->num_leds = num_leds;
+    rgb_manager->red_pin = red_pin;
+    rgb_manager->green_pin = green_pin;
+    rgb_manager->blue_pin = blue_pin;
 
-  // Check if separate pins for R, G, B are provided
-  if (red_pin != GPIO_NUM_NC && green_pin != GPIO_NUM_NC &&
-      blue_pin != GPIO_NUM_NC) {
-    rgb_manager->is_separate_pins = true;
+    // Check if separate pins for R, G, B are provided
+    if (red_pin != GPIO_NUM_NC && green_pin != GPIO_NUM_NC &&
+        blue_pin != GPIO_NUM_NC) {
+      rgb_manager->is_separate_pins = true;
 
-    // Configure the LEDC timer
-    ledc_timer_config_t ledc_timer = {
-        .speed_mode = LEDC_MODE,
-        .timer_num = LEDC_TIMER,
-        .duty_resolution = LEDC_DUTY_RES, // 8-bit duty resolution
-        .freq_hz = LEDC_FREQUENCY,        // Frequency in Hertz
-    };
-    ESP_ERROR_CHECK(ledc_timer_config(&ledc_timer));
+      // Configure the LEDC timer
+      ledc_timer_config_t ledc_timer = {
+          .speed_mode = LEDC_MODE,
+          .timer_num = LEDC_TIMER,
+          .duty_resolution = LEDC_DUTY_RES, // 8-bit duty resolution
+          .freq_hz = LEDC_FREQUENCY,        // Frequency in Hertz
+      };
+      ESP_ERROR_CHECK(ledc_timer_config(&ledc_timer));
 
-    // Configure the LEDC channels for Red, Green, Blue
-    ledc_channel_config_t ledc_channel_red = {.channel = LEDC_CHANNEL_RED,
-                                              .duty = 255,
-                                              .gpio_num = red_pin,
-                                              .speed_mode = LEDC_MODE,
-                                              .hpoint = 0,
-                                              .timer_sel = LEDC_TIMER};
-    ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel_red));
-
-    ledc_channel_config_t ledc_channel_green = {.channel = LEDC_CHANNEL_GREEN,
+      // Configure the LEDC channels for Red, Green, Blue
+      ledc_channel_config_t ledc_channel_red = {.channel = LEDC_CHANNEL_RED,
                                                 .duty = 255,
-                                                .gpio_num = green_pin,
+                                                .gpio_num = red_pin,
                                                 .speed_mode = LEDC_MODE,
                                                 .hpoint = 0,
                                                 .timer_sel = LEDC_TIMER};
-    ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel_green));
+      ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel_red));
 
-    ledc_channel_config_t ledc_channel_blue = {.channel = LEDC_CHANNEL_BLUE,
-                                               .duty = 255,
-                                               .gpio_num = blue_pin,
-                                               .speed_mode = LEDC_MODE,
-                                               .hpoint = 0,
-                                               .timer_sel = LEDC_TIMER};
-    ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel_blue));
+      ledc_channel_config_t ledc_channel_green = {.channel = LEDC_CHANNEL_GREEN,
+                                                  .duty = 255,
+                                                  .gpio_num = green_pin,
+                                                  .speed_mode = LEDC_MODE,
+                                                  .hpoint = 0,
+                                                  .timer_sel = LEDC_TIMER};
+      ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel_green));
 
-    rgb_manager_set_color(rgb_manager, 1, 0, 0, 0, false);
+      ledc_channel_config_t ledc_channel_blue = {.channel = LEDC_CHANNEL_BLUE,
+                                                 .duty = 255,
+                                                 .gpio_num = blue_pin,
+                                                 .speed_mode = LEDC_MODE,
+                                                 .hpoint = 0,
+                                                 .timer_sel = LEDC_TIMER};
+      ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel_blue));
 
-    ESP_LOGI(TAG, "RGBManager initialized for separate R/G/B pins: %d, %d, %d\n",
-           red_pin, green_pin, blue_pin);
-    return ESP_OK;
-  } else {
-    // Single pin for LED strip
-    rgb_manager->is_separate_pins = false;
+      rgb_manager_set_color(rgb_manager, 1, 0, 0, 0, false);
 
-    // Create LED strip configuration
-    led_strip_config_t strip_config = {
-        .strip_gpio_num = pin,
-        .max_leds = num_leds,
-        .led_pixel_format = pixel_format,
-        .led_model = model,
-        .flags.invert_out =
-            0 // Set to 1 if you need to invert the output signal
-    };
+      ESP_LOGI(TAG, "RGBManager initialized for separate R/G/B pins: %d, %d, %d\n",
+             red_pin, green_pin, blue_pin);
+      return ESP_OK;
+    } else {
+      // Single pin for LED strip
+      rgb_manager->is_separate_pins = false;
 
-    // Create RMT configuration for LED strip
-    led_strip_rmt_config_t rmt_config = {
-        .clk_src = RMT_CLK_SRC_DEFAULT,   // Default RMT clock source
-        .resolution_hz = 10 * 1000 * 1000 // 10 MHz resolution
-    };
+      // Create LED strip configuration
+      led_strip_config_t strip_config = {
+          .strip_gpio_num = pin,
+          .max_leds = num_leds,
+          .led_pixel_format = pixel_format,
+          .led_model = model,
+          .flags.invert_out =
+              0 // Set to 1 if you need to invert the output signal
+      };
 
-    // Initialize the LED strip with both configurations
-    esp_err_t ret = led_strip_new_rmt_device(&strip_config, &rmt_config,
-                                             &rgb_manager->strip);
-    if (ret != ESP_OK) {
-      ESP_LOGE(TAG, "Failed to initialize the LED strip\n");
-      return ret;
+      // Create RMT configuration for LED strip
+      led_strip_rmt_config_t rmt_config = {
+          .clk_src = RMT_CLK_SRC_DEFAULT,   // Default RMT clock source
+          .resolution_hz = 10 * 1000 * 1000 // 10 MHz resolution
+      };
+
+      // Initialize the LED strip with both configurations
+      esp_err_t ret = led_strip_new_rmt_device(&strip_config, &rmt_config,
+                                               &rgb_manager->strip);
+      if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize the LED strip\n");
+        return ret;
+      }
+
+      // Clear the strip (turn off all LEDs)
+      led_strip_clear(rgb_manager->strip);
+
+      ESP_LOGI(TAG, "RGBManager initialized for pin %d with %d LEDs\n", pin, num_leds);
+      return ESP_OK;
     }
-
-    // Clear the strip (turn off all LEDs)
-    led_strip_clear(rgb_manager->strip);
-
-    ESP_LOGI(TAG, "RGBManager initialized for pin %d with %d LEDs\n", pin, num_leds);
-    return ESP_OK;
-  }
 }
 
 int get_pixel_index(int row, int column) {
