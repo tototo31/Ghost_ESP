@@ -2726,8 +2726,8 @@ void handle_listportals(int argc, char **argv) {
     printf("Available Evil Portals:\n");
     TERMINAL_VIEW_ADD_TEXT("Available Evil Portals:\n");
     for (int i = 0; i < count; ++i) {
-        printf("  %s\n", portal_names[i]);
-        TERMINAL_VIEW_ADD_TEXT("  %s\n", portal_names[i]);
+        printf("  %.508s\n", portal_names[i]);
+        TERMINAL_VIEW_ADD_TEXT("  %.508s\n", portal_names[i]);
     }
 }
 

@@ -267,6 +267,19 @@ static void send_handshake_ack(void) {
     send_packet(&packet);
 }
 
+static void command_executor_task(void* arg) {
+    esp_comm_manager_t* comm = (esp_comm_manager_t*)arg;
+    comm_command_t received_cmd;
+
+    while (1) {
+        if (xQueueReceive(comm->command_queue, &received_cmd, portMAX_DELAY) == pdPASS) {
+            if (comm->command_callback) {
+                comm->command_callback(received_cmd.command, received_cmd.data, comm->callback_user_data);
+            }
+        }
+    }
+}
+
 static void protocol_task(void* arg) {
     esp_comm_manager_t* comm = (esp_comm_manager_t*)arg;
     comm_packet_t packet;
@@ -305,6 +318,15 @@ static void protocol_task(void* arg) {
                         if (strcmp(requested_name, comm->chip_name) == 0) {
                             comm->state = COMM_STATE_HANDSHAKE;
                             comm->role = COMM_ROLE_SLAVE;
+                            if (!comm->rx_packet_queue) {
+                                comm->rx_packet_queue = xQueueCreate(8, sizeof(comm_packet_t));
+                            }
+                            if (!comm->command_queue) {
+                                comm->command_queue = xQueueCreate(4, sizeof(comm_command_t));
+                            }
+                            if (!comm->command_executor_task_handle) {
+                                xTaskCreate(command_executor_task, "comm_cmd_exec_task", 8192, comm, 5, &comm->command_executor_task_handle);
+                            }
                             send_handshake_ack();
                             comm->state = COMM_STATE_CONNECTED;
                             printf("I: Handshake complete - slave role\n");
@@ -318,6 +340,20 @@ static void protocol_task(void* arg) {
                         comm->state = COMM_STATE_CONNECTED;
                         printf("I: Handshake complete - master role\n");
                         ap_manager_add_log("I: Handshake complete - master role\n");
+
+                        // restore heavy resources now that we're connected
+                        if (!comm->rx_packet_queue) {
+                            comm->rx_packet_queue = xQueueCreate(64, sizeof(comm_packet_t));
+                        }
+                        if (!comm->command_queue) {
+                            comm->command_queue = xQueueCreate(16, sizeof(comm_command_t));
+                        }
+                        if (!comm->protocol_task_handle) {
+                            xTaskCreate(protocol_task, "comm_protocol_task", 3072, comm, 10, &comm->protocol_task_handle);
+                        }
+                        if (!comm->command_executor_task_handle) {
+                            xTaskCreate(command_executor_task, "comm_cmd_exec_task", 8192, comm, 5, &comm->command_executor_task_handle);
+                        }
                     }
                     break;
                     
@@ -382,24 +418,12 @@ static void protocol_task(void* arg) {
     }
 }
 
-static void command_executor_task(void* arg) {
-    esp_comm_manager_t* comm = (esp_comm_manager_t*)arg;
-    comm_command_t received_cmd;
-
-    while (1) {
-        if (xQueueReceive(comm->command_queue, &received_cmd, portMAX_DELAY) == pdPASS) {
-            if (comm->command_callback) {
-                comm->command_callback(received_cmd.command, received_cmd.data, comm->callback_user_data);
-            }
-        }
-    }
-}
-
 static void discovery_timer_callback(TimerHandle_t xTimer) {
     if (s_comm_manager && s_comm_manager->state == COMM_STATE_SCANNING) {
         send_discovery_packet();
     }
 }
+
 
 void esp_comm_manager_init_with_defaults(void) {
     esp_comm_manager_init(DEFAULT_TX_PIN, DEFAULT_RX_PIN, DEFAULT_BAUD_RATE);
@@ -452,14 +476,11 @@ void esp_comm_manager_init(gpio_num_t tx_pin, gpio_num_t rx_pin, uint32_t baud_r
     uart_set_pin(UART_NUM_1, tx_pin, rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 
     s_comm_manager->rx_byte_queue = xQueueCreate(256, sizeof(uint8_t));
-    s_comm_manager->rx_packet_queue = xQueueCreate(64, sizeof(comm_packet_t));
     s_comm_manager->tx_queue = xQueueCreate(32, sizeof(comm_packet_t));
-    s_comm_manager->command_queue = xQueueCreate(16, sizeof(comm_command_t));
-
+    s_comm_manager->rx_packet_queue = xQueueCreate(8, sizeof(comm_packet_t));
     xTaskCreate(rx_task, "comm_rx_task", 2048, s_comm_manager, 12, &s_comm_manager->rx_task_handle);
     xTaskCreate(tx_task, "comm_tx_task", 2048, s_comm_manager, 11, &s_comm_manager->tx_task_handle);
     xTaskCreate(protocol_task, "comm_protocol_task", 3072, s_comm_manager, 10, &s_comm_manager->protocol_task_handle);
-    xTaskCreate(command_executor_task, "comm_cmd_exec_task", 8192, s_comm_manager, 5, &s_comm_manager->command_executor_task_handle);
     
     s_comm_manager->discovery_timer = xTimerCreate("discovery_timer", 
                                                    pdMS_TO_TICKS(DISCOVERY_INTERVAL_MS),
@@ -504,7 +525,25 @@ bool esp_comm_manager_start_discovery(void) {
         printf("W: Already in discovery or connected\n");
         return false;
     }
-    
+
+    // release heavy resources during discovery
+    if (s_comm_manager->protocol_task_handle) {
+        vTaskDelete(s_comm_manager->protocol_task_handle);
+        s_comm_manager->protocol_task_handle = NULL;
+    }
+    if (s_comm_manager->command_executor_task_handle) {
+        vTaskDelete(s_comm_manager->command_executor_task_handle);
+        s_comm_manager->command_executor_task_handle = NULL;
+    }
+    if (s_comm_manager->rx_packet_queue) {
+        vQueueDelete(s_comm_manager->rx_packet_queue);
+        s_comm_manager->rx_packet_queue = NULL;
+    }
+    if (s_comm_manager->command_queue) {
+        vQueueDelete(s_comm_manager->command_queue);
+        s_comm_manager->command_queue = NULL;
+    }
+
     s_comm_manager->state = COMM_STATE_SCANNING;
     xTimerStart(s_comm_manager->discovery_timer, 0);
     

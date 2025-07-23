@@ -13,6 +13,10 @@
 #include "esp_rom_sys.h"  // Contains esp_rom_printf
 #include <esp_timer.h>  // For esp_timer_get_time
 
+// prototypes for static inline helpers
+static inline bool is_packet_valid(const wifi_promiscuous_pkt_t *pkt, wifi_promiscuous_pkt_type_t type);
+static inline bool is_on_target_channel(const wifi_promiscuous_pkt_t *pkt, uint8_t target_channel);
+
 #define STORE_STR_ATTR __attribute__((section(".rodata.str")))
 #define STORE_DATA_ATTR __attribute__((section(".rodata.data")))
 #define WPS_OUI 0x0050f204
@@ -38,6 +42,8 @@
 #define RECENT_SSID_COUNT 5
 #define LOG_DELAY_MS 5000
 #define PROBE_DEDUPE_TIMEOUT_MS 1000
+#define MIN_RSSI_THRESHOLD -90  // Drop packets weaker than -90 dBm
+#define MIN_PACKET_LENGTH 24    // Minimum 802.11 header size
 static pineap_network_t pineap_networks[MAX_PINEAP_NETWORKS];
 static int pineap_network_count = 0;
 static bool pineap_detection_active = false;
@@ -326,6 +332,16 @@ void wifi_pineap_detector_callback(void *buf, wifi_promiscuous_pkt_type_t type) 
     if (!is_beacon_packet(ppkt))
         return;
 
+    // Early filtering
+    if (!is_packet_valid(ppkt, type)) {
+        return;
+    }
+
+    // Channel filtering
+    if (!is_on_target_channel(ppkt, current_channel)) {
+        return;
+    }
+
     // Find or create network
     pineap_network_t *network = find_or_create_network(hdr->addr3);
     if (!network)
@@ -503,6 +519,12 @@ bool is_pwn_response(const wifi_promiscuous_pkt_t *pkt) {
 
 void wifi_raw_scan_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
     wifi_promiscuous_pkt_t *pkt = (wifi_promiscuous_pkt_t *)buf;
+    
+    // Early filtering - raw captures everything but still filter junk
+    if (type == WIFI_PKT_MISC || pkt->rx_ctrl.sig_len < MIN_PACKET_LENGTH) {
+        return;
+    }
+    
     if (pkt->rx_ctrl.sig_len > 0) {
         esp_err_t ret =
             pcap_write_packet_to_buffer(pkt->payload, pkt->rx_ctrl.sig_len, PCAP_CAPTURE_WIFI);
@@ -596,9 +618,14 @@ void wardriving_scan_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
 }
 
 void wifi_probe_scan_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
-    if (type != WIFI_PKT_MGMT)
-        return;
+    // Early filtering for management frames only
+    if (type != WIFI_PKT_MGMT) return;
+    
     wifi_promiscuous_pkt_t *pkt = (wifi_promiscuous_pkt_t *)buf;
+    
+    // Additional early filtering
+    if (!is_packet_valid(pkt, type)) return;
+    
     if (pkt->rx_ctrl.sig_len > 0) {
         esp_err_t ret =
             pcap_write_packet_to_buffer(pkt->payload, pkt->rx_ctrl.sig_len, PCAP_CAPTURE_WIFI);
@@ -609,9 +636,18 @@ void wifi_probe_scan_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
 }
 
 void wifi_beacon_scan_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
-    if (type != WIFI_PKT_MGMT)
-        return;
+    // Early filtering for management frames only
+    if (type != WIFI_PKT_MGMT) return;
+    
     wifi_promiscuous_pkt_t *pkt = (wifi_promiscuous_pkt_t *)buf;
+    
+    // Additional early filtering
+    if (!is_packet_valid(pkt, type)) return;
+    
+    // Beacon-specific filtering - only capture beacon frames
+    uint8_t frame_subtype = (pkt->payload[0] & 0xF0) >> 4;
+    if (frame_subtype != WIFI_PKT_BEACON) return;
+    
     if (pkt->rx_ctrl.sig_len > 0) {
         esp_err_t ret =
             pcap_write_packet_to_buffer(pkt->payload, pkt->rx_ctrl.sig_len, PCAP_CAPTURE_WIFI);
@@ -622,9 +658,18 @@ void wifi_beacon_scan_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
 }
 
 void wifi_deauth_scan_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
-    if (type != WIFI_PKT_MGMT)
-        return;
+    // Early filtering for management frames only
+    if (type != WIFI_PKT_MGMT) return;
+    
     wifi_promiscuous_pkt_t *pkt = (wifi_promiscuous_pkt_t *)buf;
+    
+    // Additional early filtering
+    if (!is_packet_valid(pkt, type)) return;
+    
+    // Deauth-specific filtering - only capture deauth/disassoc frames
+    uint8_t frame_subtype = (pkt->payload[0] & 0xF0) >> 4;
+    if (frame_subtype != WIFI_PKT_DEAUTH && frame_subtype != 0x0A) return; // 0x0A = disassoc
+    
     if (pkt->rx_ctrl.sig_len > 0) {
         esp_err_t ret =
             pcap_write_packet_to_buffer(pkt->payload, pkt->rx_ctrl.sig_len, PCAP_CAPTURE_WIFI);
@@ -648,9 +693,17 @@ void wifi_pwn_scan_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
 }
 
 void wifi_eapol_scan_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
-    if (type != WIFI_PKT_MGMT)
-        return;
+    // EAPOL packets are in DATA frames, not management
+    if (type != WIFI_PKT_DATA) return;
+    
     wifi_promiscuous_pkt_t *pkt = (wifi_promiscuous_pkt_t *)buf;
+    
+    // Additional early filtering
+    if (!is_packet_valid(pkt, type)) return;
+    
+    // Quick EAPOL check - look for 0x888E ethertype
+    if (!is_eapol_response(pkt)) return;
+    
     if (pkt->rx_ctrl.sig_len > 0) {
         esp_err_t ret =
             pcap_write_packet_to_buffer(pkt->payload, pkt->rx_ctrl.sig_len, PCAP_CAPTURE_WIFI);
@@ -936,6 +989,57 @@ void ble_skimmer_scan_callback(struct ble_gap_event *event, void *arg) {
 }
 #endif
 
+// Packet statistics for monitoring filter effectiveness
+static uint32_t total_packets_received = 0;
+static uint32_t packets_filtered_out = 0;
+static uint32_t packets_processed = 0;
+
+// Early filtering helper - checks basic packet validity
+static inline bool is_packet_valid(const wifi_promiscuous_pkt_t *pkt, wifi_promiscuous_pkt_type_t type) {
+    total_packets_received++;
+    
+    // Drop MISC packets immediately
+    if (type == WIFI_PKT_MISC) {
+        packets_filtered_out++;
+        return false;
+    }
+    
+    // Check minimum length
+    if (pkt->rx_ctrl.sig_len < MIN_PACKET_LENGTH) {
+        packets_filtered_out++;
+        return false;
+    }
+    
+    // RSSI threshold filtering
+    if (pkt->rx_ctrl.rssi < MIN_RSSI_THRESHOLD) {
+        packets_filtered_out++;
+        return false;
+    }
+    
+    packets_processed++;
+    
+    // Log stats every 1000 packets
+    if (total_packets_received % 1000 == 0) {
+        char stats_msg[128];
+        snprintf(stats_msg, sizeof(stats_msg), "Filter stats: %lu total, %lu filtered, %lu processed (%.1f%% filtered)", 
+                (unsigned long)total_packets_received, 
+                (unsigned long)packets_filtered_out,
+                (unsigned long)packets_processed,
+                (float)packets_filtered_out * 100.0f / total_packets_received);
+        
+        printf("%s\n", stats_msg);
+        TERMINAL_VIEW_ADD_TEXT(stats_msg);
+        TERMINAL_VIEW_ADD_TEXT("\n");
+    }
+    
+    return true;
+}
+
+// Channel filtering helper
+static inline bool is_on_target_channel(const wifi_promiscuous_pkt_t *pkt, uint8_t target_channel) {
+    return (target_channel == 0) || (pkt->rx_ctrl.channel == target_channel);
+}
+
 // Flag indicating whether to save probe PCAP data to SD (disable UART fallback if false)
 bool g_listen_probes_save_to_sd = false;
 
@@ -943,14 +1047,17 @@ static char last_probe_log[128] = {0};
 static uint64_t last_probe_log_time_ms = 0;
 
 void wifi_listen_probes_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
-    if (type != WIFI_PKT_MGMT) {
-        return;
-    }
+    // Early filtering for management frames only
+    if (type != WIFI_PKT_MGMT) return;
 
     wifi_promiscuous_pkt_t *pkt = (wifi_promiscuous_pkt_t *)buf;
-    if (!is_probe_request(pkt)) {
-        return;
-    }
+    
+    // Additional early filtering
+    if (!is_packet_valid(pkt, type)) return;
+    
+    // Quick probe request check using frame subtype
+    uint8_t frame_subtype = (pkt->payload[0] & 0xF0) >> 4;
+    if (frame_subtype != WIFI_PKT_PROBE_REQ) return;
 
     const wifi_ieee80211_packet_t *ipkt = (wifi_ieee80211_packet_t *)pkt->payload;
     const wifi_ieee80211_mac_hdr_t *hdr = &ipkt->hdr;

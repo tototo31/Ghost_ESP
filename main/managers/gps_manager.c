@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "core/esp_comm_manager.h"
 
 static const char *GPS_TAG = "GPS";
 static bool has_valid_cached_date = false;
@@ -81,7 +82,7 @@ void gps_manager_init(GPSManager *manager) {
     printf("GPS RX: IO%d\n", current_rx_pin);
     TERMINAL_VIEW_ADD_TEXT("GPS RX: IO%d\n", current_rx_pin);
 
-        // Only disable UART1 which we use for GPS
+    esp_comm_manager_deinit();
     periph_module_disable(PERIPH_UART1_MODULE);
 
     gpio_reset_pin(current_rx_pin);
@@ -161,6 +162,7 @@ void gps_manager_deinit(GPSManager *manager) {
         nmea_parser_deinit(nmea_hdl);
         manager->isinitilized = false;
         gps_connection_logged = false;
+        esp_comm_manager_init_with_defaults();
     }
 }
 

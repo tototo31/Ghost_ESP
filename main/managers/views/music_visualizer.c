@@ -33,6 +33,8 @@ QueueHandle_t amplitudeQueue;
 int target_amplitudes[NUM_BARS] = {0};
 int current_amplitudes[NUM_BARS] = {0};
 
+static void animation_timer_callback(lv_timer_t *timer);
+
 void handle_hardware_input_music_callback(InputEvent *event) {
   if (event->type == INPUT_TYPE_TOUCH) {
     ESP_LOGI(TAG, "Touch event");
@@ -50,6 +52,11 @@ void handle_hardware_input_music_callback(InputEvent *event) {
     if (key == 27 || key == '`'){
     display_manager_switch_view(&main_menu_view);
     }
+#ifdef CONFIG_USE_ENCODER
+  } else if (event->type == INPUT_TYPE_EXIT_BUTTON) {
+    ESP_LOGI(TAG, "IO6 exit button pressed, returning to main menu");
+    display_manager_switch_view(&main_menu_view);
+#endif
   }
 }
 
@@ -64,8 +71,6 @@ View music_visualizer_view = {
     .input_callback = handle_hardware_input_music_callback,
     .name = "Music Visualizer",
     .get_hardwareinput_callback = get_music_visualizer_callback};
-
-void animation_timer_callback(lv_timer_t *timer);
 
 void music_visualizer_view_create() {
   display_manager_fill_screen(lv_color_black());
@@ -152,7 +157,7 @@ void music_visualizer_view_create() {
       lv_timer_create(animation_timer_callback, ANIMATION_INTERVAL_MS, NULL);
 }
 
-void animation_timer_callback(lv_timer_t *timer) {
+static void animation_timer_callback(lv_timer_t *timer) {
   AmplitudeData amplitudeData;
   bool dataAvailable =
       xQueueReceive(amplitudeQueue, &amplitudeData, 0) == pdTRUE;

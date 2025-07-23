@@ -18,6 +18,7 @@ static const char *PCAP_TAG = "PCAP";
 static bool is_valid_tag_length(uint8_t tag_num, uint8_t tag_len);
 static bool is_valid_beacon_fixed_params(const uint8_t *frame, size_t offset,
                                          size_t max_len);
+static esp_err_t _pcap_flush_buffer_to_file_nolock();
 
 typedef struct {
   uint8_t packet_type; // HCI packet type (1 byte)
@@ -405,7 +406,7 @@ esp_err_t pcap_write_packet_to_buffer(const void *packet, size_t length,
   }
 
   if (buffer_offset + total_packet_size > BUFFER_SIZE) {
-    esp_err_t ret = pcap_flush_buffer_to_file();
+    esp_err_t ret = _pcap_flush_buffer_to_file_nolock();
     if (ret != ESP_OK) {
       xSemaphoreGive(pcap_mutex);
       ESP_LOGE(PCAP_TAG, "Buffer flush failed");
@@ -432,72 +433,45 @@ esp_err_t pcap_write_packet_to_buffer(const void *packet, size_t length,
   memcpy(pcap_buffer + buffer_offset, packet, actual_length);
   buffer_offset += actual_length;
 
+  if (pcap_file == NULL) {
+    _pcap_flush_buffer_to_file_nolock();
+  }
+
   xSemaphoreGive(pcap_mutex);
   return ESP_OK;
 }
 
-esp_err_t pcap_flush_buffer_to_file() {
-  if (buffer_offset == 0) {
-    return ESP_OK; // Nothing to flush
-  }
+static esp_err_t _pcap_flush_buffer_to_file_nolock() {
+  if (buffer_offset > 0) {
+    if (pcap_file) { // If file is open, write to file
+      size_t written = fwrite(pcap_buffer, 1, buffer_offset, pcap_file);
+      if (written < buffer_offset) {
+        ESP_LOGE(PCAP_TAG, "Failed to write buffered data to PCAP file.");
+      }
+    } else { // If no file, write to UART
+      const char *mark_begin = "[BUF/BEGIN]";
+      const size_t mark_begin_len = strlen(mark_begin);
+      const char *mark_close = "[BUF/CLOSE]";
+      const size_t mark_close_len = strlen(mark_close);
 
-  bool needs_mutex =
-      (xTaskGetCurrentTaskHandle() != xSemaphoreGetMutexHolder(pcap_mutex));
-
-  if (needs_mutex) {
-    if (xSemaphoreTake(pcap_mutex, portMAX_DELAY) != pdTRUE) {
-      ESP_LOGE(PCAP_TAG, "Failed to take mutex");
-      return ESP_ERR_TIMEOUT;
+      uart_write_bytes(UART_NUM_0, mark_begin, mark_begin_len);
+      uart_write_bytes(UART_NUM_0, (const char *)pcap_buffer, buffer_offset);
+      uart_write_bytes(UART_NUM_0, mark_close, mark_close_len);
     }
+    buffer_offset = 0; // Reset buffer
   }
+  return ESP_OK;
+}
 
-  esp_err_t ret = ESP_OK;
-
-  if (pcap_file == NULL) {
-    const char *mark_begin = "[BUF/BEGIN]";
-    const size_t mark_begin_len = strlen(mark_begin);
-    const char *mark_close = "[BUF/CLOSE]";
-    const size_t mark_close_len = strlen(mark_close);
-
-    uart_write_bytes(UART_NUM_0, mark_begin, mark_begin_len);
-    uart_write_bytes(UART_NUM_0, (const char *)pcap_buffer, buffer_offset);
-    uart_write_bytes(UART_NUM_0, mark_close, mark_close_len);
-
-    buffer_offset = 0;
-    goto exit;
+esp_err_t pcap_flush_buffer_to_file() {
+  if (pcap_mutex == NULL) {
+    return ESP_OK;
   }
-
-  // Validate buffer contains at least one complete packet
-  if (buffer_offset < sizeof(pcap_packet_header_t)) {
-    ESP_LOGE(PCAP_TAG, "Buffer contains incomplete packet header");
-    ret = ESP_FAIL;
-    goto exit;
+  if (xSemaphoreTake(pcap_mutex, portMAX_DELAY)) {
+    _pcap_flush_buffer_to_file_nolock();
+    xSemaphoreGive(pcap_mutex);
   }
-
-  // Write entire buffer
-  size_t written = fwrite(pcap_buffer, 1, buffer_offset, pcap_file);
-  if (written != buffer_offset) {
-    ESP_LOGE(PCAP_TAG, "Failed to write buffer: %zu of %zu written", written,
-             buffer_offset);
-    ret = ESP_FAIL;
-    goto exit;
-  }
-
-  // Force flush to disk
-  if (fflush(pcap_file) != 0) {
-    ESP_LOGE(PCAP_TAG, "Failed to flush file buffer");
-    ret = ESP_FAIL;
-    goto exit;
-  }
-
-  ESP_LOGI(PCAP_TAG, "Flushed %zu bytes to file", written);
-
-  memset(pcap_buffer, 0, BUFFER_SIZE);
-  buffer_offset = 0;
-
-exit:
-  xSemaphoreGive(pcap_mutex);
-  return ret;
+  return ESP_OK;
 }
 
 void pcap_file_close() {
@@ -505,7 +479,7 @@ void pcap_file_close() {
     if (xSemaphoreTake(pcap_mutex, portMAX_DELAY) == pdTRUE) {
       if (buffer_offset > 0) {
         ESP_LOGI(PCAP_TAG, "Flushing remaining buffer before closing file.");
-        pcap_flush_buffer_to_file();
+        _pcap_flush_buffer_to_file_nolock();
       }
 
       fclose(pcap_file);

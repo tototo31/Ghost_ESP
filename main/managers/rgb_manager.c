@@ -21,7 +21,7 @@ typedef struct {
   double v; // ∈ [0, 1]
 } hsv;
 
-#define LEDC_TIMER LEDC_TIMER_0
+#define LEDC_TIMER LEDC_TIMER_1
 #define LEDC_MODE LEDC_LOW_SPEED_MODE
 #define LEDC_CHANNEL_RED LEDC_CHANNEL_0
 #define LEDC_CHANNEL_GREEN LEDC_CHANNEL_1
@@ -82,6 +82,10 @@ rgb hsv2rgb(hsv HSV) {
 }
 
 void rainbow_task(void *pvParameter) {
+#if CONFIG_NUM_LEDS < 1
+    vTaskDelete(NULL);
+    return;
+#endif
   RGBManager_t *rgb_manager = (RGBManager_t *)pvParameter;
 
   while (1) {
@@ -100,6 +104,10 @@ void rainbow_task(void *pvParameter) {
 }
 
 void police_task(void *pvParameter) {
+#if CONFIG_NUM_LEDS < 1
+    vTaskDelete(NULL);
+    return;
+#endif
   RGBManager_t *rgb_manager = (RGBManager_t *)pvParameter;
   while (1) {
 
@@ -112,6 +120,10 @@ void police_task(void *pvParameter) {
 }
 
 void strobe_task(void *pvParameter) {
+#if CONFIG_NUM_LEDS < 1
+    vTaskDelete(NULL);
+    return;
+#endif
     RGBManager_t *rgb_manager = (RGBManager_t *)pvParameter;
     rgb_manager_strobe_effect(rgb_manager, settings_get_rgb_speed(&G_Settings));
     vTaskDelete(NULL);
@@ -128,8 +140,8 @@ esp_err_t rgb_manager_init(RGBManager_t *rgb_manager, gpio_num_t pin,
                            int num_leds, led_pixel_format_t pixel_format,
                            led_model_t model, gpio_num_t red_pin,
                            gpio_num_t green_pin, gpio_num_t blue_pin) {
-#if defined(CONFIG_NUM_LEDS) && (CONFIG_NUM_LEDS < 1)
-    ESP_LOGW(TAG, "RGBManager not initialized: CONFIG_NUM_LEDS < 1");
+
+#if CONFIG_NUM_LEDS < 1
     return ESP_ERR_INVALID_ARG;
 #endif
     if (!rgb_manager)
@@ -284,6 +296,9 @@ void set_led_square(RGBManager_t *rgb_manager, uint8_t size, uint8_t red, uint8_
 }
 
 void update_led_visualizer(uint8_t *amplitudes, size_t num_bars, bool square_mode) {
+#if CONFIG_NUM_LEDS < 1
+    return;
+#endif
   extern RGBManager_t G_RGBManager; // assuming there's a global instance
   RGBManager_t *rgb_manager = &G_RGBManager;
   
@@ -364,6 +379,9 @@ void pulse_once(RGBManager_t *rgb_manager, uint8_t red, uint8_t green,
 esp_err_t rgb_manager_set_color(RGBManager_t *rgb_manager, int led_idx,
                                 uint8_t red, uint8_t green, uint8_t blue,
                                 bool pulse) {
+#if CONFIG_NUM_LEDS < 1
+    return ESP_ERR_INVALID_ARG;
+#endif
     if (!rgb_manager)
         return ESP_ERR_INVALID_ARG;
 
@@ -553,6 +571,9 @@ void rgb_manager_policesiren_effect(RGBManager_t *rgb_manager, int delay_ms) {
 }
 
 void rgb_manager_strobe_effect(RGBManager_t *rgb_manager, int delay_ms) {
+#if CONFIG_NUM_LEDS < 1
+    return;
+#endif
     if (rgb_manager->is_separate_pins && rgb_manager->num_leds > 1) {
          ESP_LOGW(TAG, "Strobe effect designed for single LED or strip treated as one.");
     }
@@ -569,6 +590,9 @@ void rgb_manager_strobe_effect(RGBManager_t *rgb_manager, int delay_ms) {
 
 // Deinitialize the RGB LED manager
 esp_err_t rgb_manager_deinit(RGBManager_t *rgb_manager) {
+#if CONFIG_NUM_LEDS < 1
+    return ESP_ERR_INVALID_ARG;
+#endif
   if (!rgb_manager)
     return ESP_ERR_INVALID_ARG;
 
