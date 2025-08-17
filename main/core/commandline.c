@@ -46,6 +46,7 @@ TaskHandle_t gps_info_task_handle = NULL;
 
 // Forward declarations for command handlers
 void cmd_wifi_scan_stop(int argc, char **argv);
+void handle_zigbee_debug(int argc, char **argv);
 #ifndef CONFIG_IDF_TARGET_ESP32S2
 void handle_list_airtags_cmd(int argc, char **argv);
 void handle_select_airtag(int argc, char **argv);
@@ -2601,6 +2602,7 @@ void register_commands() {
     register_command("blespam", handle_ble_spam_cmd);
 #endif
     register_command("setrgbmode", handle_set_rgb_mode_cmd);
+    register_command("zigbee", handle_zigbee_debug);
     
     esp_comm_manager_set_command_callback(comm_command_callback, NULL);
     
@@ -2726,6 +2728,126 @@ void handle_set_rgb_mode_cmd(int argc, char **argv) {
     settings_save(&G_Settings);
     printf("RGB mode set to %s\n", argv[1]);
     TERMINAL_VIEW_ADD_TEXT("RGB mode set to %s\n", argv[1]);
+}
+
+void handle_zigbee_debug(int argc, char **argv) {
+    if (argc < 2) {
+        printf("Zigbee Debug Commands:\n");
+        printf("  zigbee status     - Show Zigbee manager status\n");
+        printf("  zigbee permit <n> - Permit joining for n seconds\n");
+        printf("  zigbee send <hex> - Send test data (e.g., zigbee send 01020304)\n");
+        printf("  zigbee reset      - Reset Zigbee network\n");
+        printf("  zigbee partition  - Check zb_storage partition status\n");
+        TERMINAL_VIEW_ADD_TEXT("Zigbee Debug Commands:\n");
+        TERMINAL_VIEW_ADD_TEXT("  zigbee status     - Show Zigbee manager status\n");
+        TERMINAL_VIEW_ADD_TEXT("  zigbee permit <n> - Permit joining for n seconds\n");
+        TERMINAL_VIEW_ADD_TEXT("  zigbee send <hex> - Send test data\n");
+        TERMINAL_VIEW_ADD_TEXT("  zigbee reset      - Reset Zigbee network\n");
+        TERMINAL_VIEW_ADD_TEXT("  zigbee partition  - Check zb_storage partition status\n");
+        return;
+    }
+
+    if (strcmp(argv[1], "status") == 0) {
+        printf("Zigbee Manager Status:\n");
+        TERMINAL_VIEW_ADD_TEXT("Zigbee Manager Status:\n");
+        
+        // Call the Zigbee manager status function
+        extern void zigbee_manager_print_status(void);
+        zigbee_manager_print_status();
+        
+    } else if (strcmp(argv[1], "permit") == 0) {
+        if (argc != 3) {
+            printf("Usage: zigbee permit <seconds>\n");
+            TERMINAL_VIEW_ADD_TEXT("Usage: zigbee permit <seconds>\n");
+            return;
+        }
+        int duration = atoi(argv[2]);
+        if (duration <= 0 || duration > 255) {
+            printf("Invalid duration. Must be 1-255 seconds\n");
+            TERMINAL_VIEW_ADD_TEXT("Invalid duration. Must be 1-255 seconds\n");
+            return;
+        }
+        
+        printf("Permitting Zigbee device joining for %d seconds\n", duration);
+        TERMINAL_VIEW_ADD_TEXT("Permitting Zigbee device joining for %d seconds\n", duration);
+        
+        // Call the Zigbee manager test function
+        extern void zigbee_manager_test_permit_join(uint8_t duration_sec);
+        zigbee_manager_test_permit_join((uint8_t)duration);
+        
+    } else if (strcmp(argv[1], "send") == 0) {
+        if (argc != 3) {
+            printf("Usage: zigbee send <hex_data>\n");
+            printf("Example: zigbee send 01020304\n");
+            TERMINAL_VIEW_ADD_TEXT("Usage: zigbee send <hex_data>\n");
+            return;
+        }
+        
+        // Parse hex string
+        char *hex_str = argv[2];
+        int len = strlen(hex_str);
+        if (len % 2 != 0) {
+            printf("Invalid hex string length. Must be even number of characters.\n");
+            TERMINAL_VIEW_ADD_TEXT("Invalid hex string length. Must be even number of characters.\n");
+            return;
+        }
+        
+        uint8_t data[128]; // Max 64 bytes
+        int data_len = 0;
+        
+        for (int i = 0; i < len && data_len < 64; i += 2) {
+            char hex_byte[3] = {hex_str[i], hex_str[i+1], 0};
+            unsigned int val;
+            if (sscanf(hex_byte, "%x", &val) != 1) {
+                printf("Invalid hex character at position %d\n", i);
+                TERMINAL_VIEW_ADD_TEXT("Invalid hex character at position %d\n", i);
+                return;
+            }
+            data[data_len++] = (uint8_t)val;
+        }
+        
+        printf("Sending %d bytes: ", data_len);
+        for (int i = 0; i < data_len; i++) {
+            printf("%02x ", data[i]);
+        }
+        printf("\n");
+        TERMINAL_VIEW_ADD_TEXT("Sending %d bytes\n", data_len);
+        
+        // This would call the actual send function when implemented
+        // zigbee_manager_send_command(data, data_len);
+        printf("Note: Send functionality not yet implemented\n");
+        TERMINAL_VIEW_ADD_TEXT("Note: Send functionality not yet implemented\n");
+        
+    } else if (strcmp(argv[1], "reset") == 0) {
+        printf("Resetting Zigbee network...\n");
+        TERMINAL_VIEW_ADD_TEXT("Resetting Zigbee network...\n");
+        
+        // This would call the actual reset function when implemented
+        printf("Note: Reset functionality not yet implemented\n");
+        TERMINAL_VIEW_ADD_TEXT("Note: Reset functionality not yet implemented\n");
+        
+    } else if (strcmp(argv[1], "partition") == 0) {
+        printf("Checking Zigbee partition status...\n");
+        TERMINAL_VIEW_ADD_TEXT("Checking Zigbee partition status...\n");
+        
+        // Call the Zigbee manager partition check function
+        extern bool zigbee_manager_check_partition(void);
+        bool partition_ok = zigbee_manager_check_partition();
+        
+        if (partition_ok) {
+            printf("✓ zb_storage partition found and accessible\n");
+            TERMINAL_VIEW_ADD_TEXT("✓ zb_storage partition found and accessible\n");
+        } else {
+            printf("✗ zb_storage partition not found or inaccessible\n");
+            TERMINAL_VIEW_ADD_TEXT("✗ zb_storage partition not found or inaccessible\n");
+        }
+        
+    } else {
+        printf("Unknown Zigbee command: %s\n", argv[1]);
+        printf("Use 'zigbee' for help\n");
+        TERMINAL_VIEW_ADD_TEXT("Unknown Zigbee command\n");
+        TERMINAL_VIEW_ADD_TEXT("Use 'zigbee' for help\n");
+    }
 }
 
 

@@ -7,6 +7,7 @@
 #include "managers/sd_card_manager.h"
 #include "managers/settings_manager.h"
 #include "managers/wifi_manager.h"
+#include "managers/zigbee_manager.h"  // Temporarily disabled due to library compatibility issues
 #include "core/esp_comm_manager.h"
 #ifndef CONFIG_IDF_TARGET_ESP32S2
 #include "managers/ble_manager.h"
@@ -148,6 +149,10 @@ void app_main(void) {
 
     ESP_LOGI(TAG, "Initializing AP Manager");
     MEASURE_INIT_RAM("AP Manager", ap_manager_init());
+
+     ESP_LOGI(TAG, "Initializing Zigbee Manager");
+    ZigbeeManager zigbee_manager;
+    MEASURE_INIT_RAM("Zigbee Manager", zigbee_manager_init(&zigbee_manager));
 
 #ifdef CONFIG_WITH_SCREEN
 
