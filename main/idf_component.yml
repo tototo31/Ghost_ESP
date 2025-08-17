@@ -1,3 +1,4 @@
-
 dependencies:
-  espressif/esp_lcd_axs15231b: "==1.0.0"
+  espressif/esp_lcd_axs15231b: ==1.0.0
+  espressif/esp-zigbee-lib: '*'
+  espressif/esp-zboss-lib: '*'
