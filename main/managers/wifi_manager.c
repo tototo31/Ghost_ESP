@@ -1123,19 +1123,46 @@ esp_err_t captive_portal_redirect_handler(httpd_req_t *req) {
         return ESP_OK;
     }
     const char *uri = req->uri;
-    // Samsung-specific fix: Return 200 OK for /generate_204 to prevent WiFi disconnection
+    // Samsung-specific fix: Return 200 OK for /generate_204 only for Samsung devices
     // Based on: https://android.stackexchange.com/questions/139588/captive-portal-detection-causing-phones-to-disconnect-from-wi-fi-in-intranet-env/208674#208674
     if (strcmp(uri, "/generate_204") == 0 || strcmp(uri, "/gen_204") == 0) {
-        // For Samsung devices, return 200 OK instead of redirect to prevent WiFi disconnection
-        // This addresses the issue where Samsung devices disconnect after ~1 minute if they get 302 redirects
-        httpd_resp_set_status(req, "200 OK");
-        httpd_resp_set_type(req, "text/html");
-        httpd_resp_send(req, NULL, 0);
-        ESP_LOGI(TAG, "Samsung captive portal fix: Returning 200 OK for %s", uri);
-        return ESP_OK;
+        // Check if this is a Samsung device by User-Agent
+        size_t ua_len = httpd_req_get_hdr_value_len(req, "User-Agent") + 1;
+        if (ua_len > 1) {
+            char *ua = malloc(ua_len);
+            if (ua) {
+                if (httpd_req_get_hdr_value_str(req, "User-Agent", ua, ua_len) == ESP_OK) {
+                    // Check for Samsung device indicators in User-Agent
+                    bool is_samsung = (strstr(ua, "SM-") != NULL) ||           // Samsung model numbers
+                                     (strstr(ua, "SAMSUNG") != NULL) ||         // Samsung brand
+                                     (strstr(ua, "GT-") != NULL) ||            // Older Samsung models
+                                     (strstr(ua, "SCH-") != NULL) ||           // Sprint Samsung models
+                                     (strstr(ua, "SPH-") != NULL) ||           // Sprint Samsung models
+                                     (strstr(ua, "SGH-") != NULL) ||           // Samsung GSM models
+                                     (strstr(ua, "Galaxy") != NULL);           // Galaxy series
+                    
+                    if (is_samsung) {
+                        // For Samsung devices, return 200 OK instead of redirect to prevent WiFi disconnection
+                        // This addresses the issue where Samsung devices disconnect after ~1 minute if they get 302 redirects
+                        httpd_resp_set_status(req, "200 OK");
+                        httpd_resp_set_type(req, "text/html");
+                        httpd_resp_send(req, NULL, 0);
+                        ESP_LOGI(TAG, "Samsung captive portal fix: Returning 200 OK for %s (User-Agent: %s)", uri, ua);
+                        free(ua);
+                        return ESP_OK;
+                    } else {
+                        ESP_LOGI(TAG, "Non-Samsung device detected for %s, proceeding with normal captive portal logic (User-Agent: %s)", uri, ua);
+                    }
+                }
+                free(ua);
+            }
+        }
+        // If not Samsung or User-Agent check failed, fall through to normal logic
     }
     
     if (
+        (strncmp(uri, "/generate_204", 13) == 0 && (uri[13] == '\0' || uri[13] == '?' )) ||
+        (strncmp(uri, "/gen_204", 8) == 0 && (uri[8] == '\0' || uri[8] == '?' )) ||
         (strncmp(uri, "/connecttest.txt", 16) == 0 && (uri[16] == '\0' || uri[16] == '?' )) ||
         (strncmp(uri, "/ncsi.txt", 9) == 0 && (uri[9] == '\0' || uri[9] == '?' )) ||
         (strncmp(uri, "/check_network_status.txt", 25) == 0 && (uri[25] == '\0' || uri[25] == '?' )) ||
