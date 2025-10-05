@@ -2,6 +2,7 @@
 #include "managers/views/main_menu_screen.h"
 #include "managers/views/music_visualizer.h"
 #include <stdio.h>
+#include "esp_log.h"
 
 lv_obj_t *splash_screen;
 lv_obj_t *img;
@@ -10,6 +11,8 @@ static void fade_anim_cb(void *var, int32_t opacity);
 static void fade_out_cb(void *var);
 
 void splash_create(void) {
+  ESP_LOGI("SplashScreen", "Creating splash screen");
+  printf("SplashScreen: Creating splash screen\n");
 
   display_manager_fill_screen(lv_color_black());
 
@@ -55,6 +58,9 @@ void splash_create(void) {
   lv_anim_set_ready_cb(&fade_anim, fade_out_cb);
   lv_anim_start(&fade_anim);
   
+  ESP_LOGI("SplashScreen", "Splash screen animation started (2 second duration)");
+  printf("SplashScreen: Animation started, should complete in 2 seconds\n");
+  
 
 }
 
@@ -63,6 +69,8 @@ static void fade_anim_cb(void *var, int32_t opacity) {
 }
 
 static void fade_out_cb(void *var) {
+  ESP_LOGI("SplashScreen", "Fade animation completed, switching to main menu");
+  printf("SplashScreen: Fade animation completed, switching to main menu\n");
   display_manager_switch_view(&main_menu_view);
 }
 

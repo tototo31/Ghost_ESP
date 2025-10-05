@@ -1029,8 +1029,14 @@ set_keyboard_brightness(0xFF); // Set to 100% brightness
 
 
 #ifndef CONFIG_JC3248W535EN_LCD // JC3248W535EN has its own lvgl task
-xTaskCreate(lvgl_tick_task, "LVGL Tick Task", 4096, NULL,
-            RENDERING_TASK_PRIORITY, &lvgl_task_handle);
+if (xTaskCreate(lvgl_tick_task, "LVGL Tick Task", 4096, NULL,
+            RENDERING_TASK_PRIORITY, &lvgl_task_handle) == pdPASS) {
+    ESP_LOGI(TAG, "LVGL Tick Task created successfully");
+    printf("DisplayManager: LVGL Tick Task created successfully\n");
+} else {
+    ESP_LOGE(TAG, "Failed to create LVGL Tick Task");
+    printf("DisplayManager: ERROR - Failed to create LVGL Tick Task\n");
+}
 #endif
 if (xTaskCreate(hardware_input_task, "RawInput", 4096, NULL,
                 HARDWARE_INPUT_TASK_PRIORITY, &input_task_handle) != pdPASS) {
@@ -1673,12 +1679,24 @@ void processEvent() {
 void lvgl_tick_task(void *arg) {
   const TickType_t tick_interval = pdMS_TO_TICKS(10);
   TickType_t last_mon = 0;
+  TickType_t last_log = 0;
+  ESP_LOGI(TAG, "LVGL Tick Task started");
+  printf("DisplayManager: LVGL Tick Task started\n");
+  
   while (1) {
       processEvent();
       lv_timer_handler();
       lv_tick_inc(10);
-      // Monitor input queue backlog periodically
+      
       TickType_t now = xTaskGetTickCount();
+      
+      // Log every 5 seconds to confirm task is running
+      if (now - last_log >= pdMS_TO_TICKS(5000)) {
+          ESP_LOGI(TAG, "LVGL Tick Task running (tick: %lu)", (unsigned long)now);
+          printf("DisplayManager: LVGL Tick Task running (tick: %lu)\n", (unsigned long)now);
+          last_log = now;
+      }
+      // Monitor input queue backlog periodically
       if (now - last_mon >= pdMS_TO_TICKS(500)) {
           UBaseType_t pending = uxQueueMessagesWaiting((QueueHandle_t)input_queue);
           if (pending > 0) {

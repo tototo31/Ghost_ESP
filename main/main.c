@@ -190,8 +190,14 @@ void app_main(void) {
 #endif
     ESP_LOGI(TAG, "Initializing display manager");
     MEASURE_INIT_RAM("Display Manager", display_manager_init() );
+    ESP_LOGI(TAG, "Display manager initialization complete");
+    printf("Main: Display manager initialization complete\n");
+    
     ESP_LOGI(TAG, "Presenting splash screen");
+    printf("Main: Switching to splash screen\n");
     display_manager_switch_view(&splash_view);
+    ESP_LOGI(TAG, "Splash screen switch command sent");
+    printf("Main: Splash screen switch command sent\n");
     if (settings_get_rgb_mode(&G_Settings) == RGB_MODE_RAINBOW) {
         if (rainbow_timer == NULL) {
             rainbow_timer = lv_timer_create(rainbow_effect_cb, 50, NULL);
