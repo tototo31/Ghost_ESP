@@ -51,6 +51,7 @@
 #include "freertos/queue.h"
 #include "managers/usb_keyboard_manager.h"
 #include "mbedtls/base64.h"
+#include "managers/lora_manager.h"
 
 static const char *TAG = "Commandline";
 
@@ -5410,6 +5411,212 @@ void handle_usb_kbd_cmd(int argc, char **argv) {
     }
 }
 
+// Forward declaration
+void handle_lora_cmd(int argc, char **argv);
+
+// LoRa RX callback
+static void lora_rx_callback(const lora_packet_t *packet) {
+    glog("RX: RSSI=%d dBm, SNR=%.1f dB, Len=%d, Data: ", 
+         packet->rssi, packet->snr, packet->length);
+    for (int i = 0; i < packet->length && i < 50; i++) {
+        if (packet->data[i] >= 32 && packet->data[i] < 127) {
+            glog("%c", packet->data[i]);
+        } else {
+            glog("\\x%02X", packet->data[i]);
+        }
+    }
+    glog("\n");
+}
+
+void handle_lora_cmd(int argc, char **argv) {
+    if (argc < 2) {
+        glog("LoRa Commands:\n");
+        glog("  lora init <mosi> <miso> <clk> <cs> [reset] [busy] [dio1] - Initialize LoRa with SPI pins\n");
+        glog("  lora send <data> - Send a packet\n");
+        glog("  lora receive - Start receiving packets\n");
+        glog("  lora stop - Stop receiving\n");
+        glog("  lora freq <hz> - Set frequency in Hz (e.g., 915000000)\n");
+        glog("  lora sf <6-12> - Set spreading factor\n");
+        glog("  lora bw <0-9> - Set bandwidth (0=7.8kHz, 7=125kHz, 9=500kHz)\n");
+        glog("  lora cr <1-4> - Set coding rate\n");
+        glog("  lora power <0-22> - Set TX power in dBm\n");
+        glog("  lora status - Show current status\n");
+        glog("  lora sleep - Put radio in sleep mode\n");
+        glog("  lora wake - Wake radio from sleep\n");
+        return;
+    }
+    
+    if (strcmp(argv[1], "init") == 0) {
+        if (argc < 6) {
+            glog("Usage: lora init <mosi> <miso> <clk> <cs> [reset] [busy] [dio1]\n");
+            return;
+        }
+        
+        lora_config_t config = {0};
+        config.spi_mosi_pin = (gpio_num_t)atoi(argv[2]);
+        config.spi_miso_pin = (gpio_num_t)atoi(argv[3]);
+        config.spi_clk_pin = (gpio_num_t)atoi(argv[4]);
+        config.spi_cs_pin = (gpio_num_t)atoi(argv[5]);
+        config.reset_pin = (argc > 6) ? (gpio_num_t)atoi(argv[6]) : GPIO_NUM_NC;
+        config.busy_pin = (argc > 7) ? (gpio_num_t)atoi(argv[7]) : GPIO_NUM_NC;
+        config.dio1_pin = (argc > 8) ? (gpio_num_t)atoi(argv[8]) : GPIO_NUM_NC;
+        config.spi_host = SPI2_HOST;
+        config.frequency_hz = 915000000; // Default 915 MHz
+        config.spreading_factor = 7;
+        config.bandwidth = 7; // 125 kHz
+        config.coding_rate = 1;
+        config.tx_power = 14; // 14 dBm
+        config.crc_enabled = true;
+        config.implicit_header = false;
+        config.preamble_length = 8;
+        
+        esp_err_t ret = lora_manager_init(&config);
+        if (ret == ESP_OK) {
+            glog("LoRa initialized successfully\n");
+        } else {
+            glog("LoRa initialization failed: %s\n", esp_err_to_name(ret));
+        }
+    } else if (strcmp(argv[1], "send") == 0) {
+        if (argc < 3) {
+            glog("Usage: lora send <data>\n");
+            return;
+        }
+        
+        if (!lora_manager_is_initialized()) {
+            glog("LoRa not initialized. Use 'lora init' first.\n");
+            return;
+        }
+        
+        const char *data = argv[2];
+        uint8_t len = strlen(data);
+        if (len > 255) len = 255;
+        
+        esp_err_t ret = lora_manager_send_packet((const uint8_t *)data, len);
+        if (ret == ESP_OK) {
+            glog("Packet sent successfully\n");
+        } else {
+            glog("Failed to send packet: %s\n", esp_err_to_name(ret));
+        }
+    } else if (strcmp(argv[1], "receive") == 0) {
+        if (!lora_manager_is_initialized()) {
+            glog("LoRa not initialized. Use 'lora init' first.\n");
+            return;
+        }
+        
+        // Set callback to print received packets
+        lora_manager_set_rx_callback(lora_rx_callback);
+        
+        esp_err_t ret = lora_manager_start_receive();
+        if (ret == ESP_OK) {
+            glog("Receiving packets...\n");
+        } else {
+            glog("Failed to start receive: %s\n", esp_err_to_name(ret));
+        }
+    } else if (strcmp(argv[1], "stop") == 0) {
+        lora_manager_stop_receive();
+        glog("Stopped receiving\n");
+    } else if (strcmp(argv[1], "freq") == 0) {
+        if (argc < 3) {
+            glog("Usage: lora freq <hz>\n");
+            return;
+        }
+        
+        uint32_t freq = atoi(argv[2]);
+        esp_err_t ret = lora_manager_set_frequency(freq);
+        if (ret == ESP_OK) {
+            glog("Frequency set to %lu Hz\n", (unsigned long)freq);
+        } else {
+            glog("Failed to set frequency: %s\n", esp_err_to_name(ret));
+        }
+    } else if (strcmp(argv[1], "sf") == 0) {
+        if (argc < 3) {
+            glog("Usage: lora sf <6-12>\n");
+            return;
+        }
+        
+        uint8_t sf = atoi(argv[2]);
+        esp_err_t ret = lora_manager_set_spreading_factor(sf);
+        if (ret == ESP_OK) {
+            glog("Spreading factor set to %d\n", sf);
+        } else {
+            glog("Failed to set spreading factor: %s\n", esp_err_to_name(ret));
+        }
+    } else if (strcmp(argv[1], "bw") == 0) {
+        if (argc < 3) {
+            glog("Usage: lora bw <0-9>\n");
+            return;
+        }
+        
+        uint8_t bw = atoi(argv[2]);
+        esp_err_t ret = lora_manager_set_bandwidth(bw);
+        if (ret == ESP_OK) {
+            glog("Bandwidth set to %d\n", bw);
+        } else {
+            glog("Failed to set bandwidth: %s\n", esp_err_to_name(ret));
+        }
+    } else if (strcmp(argv[1], "cr") == 0) {
+        if (argc < 3) {
+            glog("Usage: lora cr <1-4>\n");
+            return;
+        }
+        
+        uint8_t cr = atoi(argv[2]);
+        esp_err_t ret = lora_manager_set_coding_rate(cr);
+        if (ret == ESP_OK) {
+            glog("Coding rate set to %d\n", cr);
+        } else {
+            glog("Failed to set coding rate: %s\n", esp_err_to_name(ret));
+        }
+    } else if (strcmp(argv[1], "power") == 0) {
+        if (argc < 3) {
+            glog("Usage: lora power <0-22>\n");
+            return;
+        }
+        
+        uint8_t power = atoi(argv[2]);
+        esp_err_t ret = lora_manager_set_tx_power(power);
+        if (ret == ESP_OK) {
+            glog("TX power set to %d dBm\n", power);
+        } else {
+            glog("Failed to set TX power: %s\n", esp_err_to_name(ret));
+        }
+    } else if (strcmp(argv[1], "status") == 0) {
+        if (!lora_manager_is_initialized()) {
+            glog("LoRa not initialized\n");
+            return;
+        }
+        
+        lora_config_t config;
+        if (lora_manager_get_config(&config) == ESP_OK) {
+            glog("LoRa Status:\n");
+            glog("  Initialized: Yes\n");
+            glog("  Frequency: %lu Hz\n", (unsigned long)config.frequency_hz);
+            glog("  Spreading Factor: %d\n", config.spreading_factor);
+            glog("  Bandwidth: %d\n", config.bandwidth);
+            glog("  Coding Rate: %d\n", config.coding_rate);
+            glog("  TX Power: %d dBm\n", config.tx_power);
+            glog("  Receiving: %s\n", lora_manager_is_receiving() ? "Yes" : "No");
+        }
+    } else if (strcmp(argv[1], "sleep") == 0) {
+        esp_err_t ret = lora_manager_sleep();
+        if (ret == ESP_OK) {
+            glog("Radio put to sleep\n");
+        } else {
+            glog("Failed to sleep: %s\n", esp_err_to_name(ret));
+        }
+    } else if (strcmp(argv[1], "wake") == 0) {
+        esp_err_t ret = lora_manager_wake();
+        if (ret == ESP_OK) {
+            glog("Radio woken up\n");
+        } else {
+            glog("Failed to wake: %s\n", esp_err_to_name(ret));
+        }
+    } else {
+        glog("Unknown LoRa command: %s\n", argv[1]);
+        glog("Use 'lora' for help\n");
+    }
+}
+
 void register_commands() {
     command_init();
     register_command("help", handle_help);
@@ -5518,6 +5725,7 @@ void register_commands() {
 #if CONFIG_IDF_TARGET_ESP32S3
     register_command("usbkbd", handle_usb_kbd_cmd);
 #endif
+    register_command("lora", handle_lora_cmd);
 
     esp_comm_manager_set_command_callback(comm_command_callback, NULL);
     
