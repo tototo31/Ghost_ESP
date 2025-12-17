@@ -5416,14 +5416,33 @@ void handle_lora_cmd(int argc, char **argv);
 
 // LoRa RX callback
 static void lora_rx_callback(const lora_packet_t *packet) {
-    glog("RX: RSSI=%d dBm, SNR=%.1f dB, Len=%d, Data: ", 
+    glog("[LoRa] RSSI=%d dBm, SNR=%.1f dB, Len=%d\n", 
          packet->rssi, packet->snr, packet->length);
-    for (int i = 0; i < packet->length && i < 50; i++) {
-        if (packet->data[i] >= 32 && packet->data[i] < 127) {
-            glog("%c", packet->data[i]);
-        } else {
-            glog("\\x%02X", packet->data[i]);
+    
+    // Show hex dump for binary data (like Meshtastic)
+    glog("  Hex: ");
+    for (int i = 0; i < packet->length && i < 64; i++) {
+        glog("%02X ", packet->data[i]);
+        if ((i + 1) % 16 == 0 && i < packet->length - 1) {
+            glog("\n       ");
         }
+    }
+    glog("\n");
+    
+    // Also show ASCII if printable
+    bool all_printable = true;
+    for (int i = 0; i < packet->length && i < 64; i++) {
+        if (packet->data[i] < 32 || packet->data[i] >= 127) {
+            all_printable = false;
+            break;
+        }
+    }
+    if (all_printable && packet->length > 0) {
+        glog("  ASCII: ");
+        for (int i = 0; i < packet->length && i < 64; i++) {
+            glog("%c", packet->data[i]);
+        }
+        glog("\n");
     }
     glog("\n");
 }
@@ -5431,41 +5450,68 @@ static void lora_rx_callback(const lora_packet_t *packet) {
 void handle_lora_cmd(int argc, char **argv) {
     if (argc < 2) {
         glog("LoRa Commands:\n");
-        glog("  lora init <mosi> <miso> <clk> <cs> [reset] [busy] [dio1] - Initialize LoRa with SPI pins\n");
+        glog("  lora init [mosi] [miso] [clk] [cs] [reset] [busy] [dio1] - Initialize LoRa\n");
+        glog("    If pins not provided, uses menuconfig settings (if enabled)\n");
+        glog("  lora meshtastic - Configure for Meshtastic (906.875 MHz, SF7, BW125, CR4/5)\n");
         glog("  lora send <data> - Send a packet\n");
         glog("  lora receive - Start receiving packets\n");
         glog("  lora stop - Stop receiving\n");
-        glog("  lora freq <hz> - Set frequency in Hz (e.g., 915000000)\n");
+        glog("  lora freq <hz> - Set frequency in Hz (e.g., 906875000 for 906.875 MHz)\n");
         glog("  lora sf <6-12> - Set spreading factor\n");
         glog("  lora bw <0-9> - Set bandwidth (0=7.8kHz, 7=125kHz, 9=500kHz)\n");
-        glog("  lora cr <1-4> - Set coding rate\n");
+        glog("  lora cr <1-4> - Set coding rate (1=4/5, 2=4/6, 3=4/7, 4=4/8)\n");
         glog("  lora power <0-22> - Set TX power in dBm\n");
         glog("  lora status - Show current status\n");
         glog("  lora sleep - Put radio in sleep mode\n");
         glog("  lora wake - Wake radio from sleep\n");
+        glog("  lora test - Test radio communication\n");
         return;
     }
     
     if (strcmp(argv[1], "init") == 0) {
-        if (argc < 6) {
+        lora_config_t config = {0};
+        
+        // If pins provided, use them; otherwise use menuconfig defaults
+        if (argc >= 6) {
+            config.spi_mosi_pin = (gpio_num_t)atoi(argv[2]);
+            config.spi_miso_pin = (gpio_num_t)atoi(argv[3]);
+            config.spi_clk_pin = (gpio_num_t)atoi(argv[4]);
+            config.spi_cs_pin = (gpio_num_t)atoi(argv[5]);
+            config.reset_pin = (argc > 6 && atoi(argv[6]) >= 0) ? (gpio_num_t)atoi(argv[6]) : GPIO_NUM_NC;
+            config.busy_pin = (argc > 7 && atoi(argv[7]) >= 0) ? (gpio_num_t)atoi(argv[7]) : GPIO_NUM_NC;
+            config.dio1_pin = (argc > 8 && atoi(argv[8]) >= 0) ? (gpio_num_t)atoi(argv[8]) : GPIO_NUM_NC;
+        } else {
+            // Use menuconfig defaults if available
+#ifdef CONFIG_LORA_ENABLED
+            config.spi_mosi_pin = (gpio_num_t)CONFIG_LORA_SPI_MOSI_PIN;
+            config.spi_miso_pin = (gpio_num_t)CONFIG_LORA_SPI_MISO_PIN;
+            config.spi_clk_pin = (gpio_num_t)CONFIG_LORA_SPI_CLK_PIN;
+            config.spi_cs_pin = (gpio_num_t)CONFIG_LORA_SPI_CS_PIN;
+            config.reset_pin = (CONFIG_LORA_RESET_PIN >= 0) ? (gpio_num_t)CONFIG_LORA_RESET_PIN : GPIO_NUM_NC;
+            config.busy_pin = (CONFIG_LORA_BUSY_PIN >= 0) ? (gpio_num_t)CONFIG_LORA_BUSY_PIN : GPIO_NUM_NC;
+            config.dio1_pin = (CONFIG_LORA_DIO1_PIN >= 0) ? (gpio_num_t)CONFIG_LORA_DIO1_PIN : GPIO_NUM_NC;
+            glog("Using menuconfig pin settings\n");
+#else
             glog("Usage: lora init <mosi> <miso> <clk> <cs> [reset] [busy] [dio1]\n");
+            glog("Or enable LoRa in menuconfig and use: lora init\n");
             return;
+#endif
         }
         
-        lora_config_t config = {0};
-        config.spi_mosi_pin = (gpio_num_t)atoi(argv[2]);
-        config.spi_miso_pin = (gpio_num_t)atoi(argv[3]);
-        config.spi_clk_pin = (gpio_num_t)atoi(argv[4]);
-        config.spi_cs_pin = (gpio_num_t)atoi(argv[5]);
-        config.reset_pin = (argc > 6) ? (gpio_num_t)atoi(argv[6]) : GPIO_NUM_NC;
-        config.busy_pin = (argc > 7) ? (gpio_num_t)atoi(argv[7]) : GPIO_NUM_NC;
-        config.dio1_pin = (argc > 8) ? (gpio_num_t)atoi(argv[8]) : GPIO_NUM_NC;
         config.spi_host = SPI2_HOST;
+#ifdef CONFIG_LORA_ENABLED
+        config.frequency_hz = CONFIG_LORA_FREQUENCY_HZ;
+        config.spreading_factor = CONFIG_LORA_SPREADING_FACTOR;
+        config.bandwidth = CONFIG_LORA_BANDWIDTH;
+        config.coding_rate = CONFIG_LORA_CODING_RATE;
+        config.tx_power = CONFIG_LORA_TX_POWER;
+#else
         config.frequency_hz = 915000000; // Default 915 MHz
         config.spreading_factor = 7;
         config.bandwidth = 7; // 125 kHz
         config.coding_rate = 1;
         config.tx_power = 14; // 14 dBm
+#endif
         config.crc_enabled = true;
         config.implicit_header = false;
         config.preamble_length = 8;
@@ -5476,6 +5522,43 @@ void handle_lora_cmd(int argc, char **argv) {
         } else {
             glog("LoRa initialization failed: %s\n", esp_err_to_name(ret));
         }
+    } else if (strcmp(argv[1], "meshtastic") == 0) {
+        if (!lora_manager_is_initialized()) {
+            glog("LoRa not initialized. Use 'lora init' first.\n");
+            return;
+        }
+        
+        // Configure for Meshtastic: 906.875 MHz, SF7, BW125 (7), CR4/5 (1)
+        esp_err_t ret = lora_manager_set_frequency(906875000);
+        if (ret != ESP_OK) {
+            glog("Failed to set frequency: %s\n", esp_err_to_name(ret));
+            return;
+        }
+        
+        ret = lora_manager_set_spreading_factor(7);
+        if (ret != ESP_OK) {
+            glog("Failed to set spreading factor: %s\n", esp_err_to_name(ret));
+            return;
+        }
+        
+        ret = lora_manager_set_bandwidth(7); // 125 kHz
+        if (ret != ESP_OK) {
+            glog("Failed to set bandwidth: %s\n", esp_err_to_name(ret));
+            return;
+        }
+        
+        ret = lora_manager_set_coding_rate(1); // 4/5
+        if (ret != ESP_OK) {
+            glog("Failed to set coding rate: %s\n", esp_err_to_name(ret));
+            return;
+        }
+        
+        glog("Configured for Meshtastic:\n");
+        glog("  Frequency: 906.875 MHz\n");
+        glog("  Spreading Factor: 7\n");
+        glog("  Bandwidth: 125 kHz\n");
+        glog("  Coding Rate: 4/5\n");
+        glog("Use 'lora receive' to start listening for Meshtastic packets\n");
     } else if (strcmp(argv[1], "send") == 0) {
         if (argc < 3) {
             glog("Usage: lora send <data>\n");
@@ -5509,6 +5592,13 @@ void handle_lora_cmd(int argc, char **argv) {
         esp_err_t ret = lora_manager_start_receive();
         if (ret == ESP_OK) {
             glog("Receiving packets...\n");
+            glog("Listening for LoRa packets. If no packets appear, check:\n");
+            glog("  - Frequency matches transmitter (use 'lora freq' to set)\n");
+            glog("  - Spreading factor matches (use 'lora sf' to set)\n");
+            glog("  - Bandwidth matches (use 'lora bw' to set)\n");
+            glog("  - Coding rate matches (use 'lora cr' to set)\n");
+            glog("  - Antenna is connected\n");
+            glog("  - DIO1 pin is connected (for interrupt-based reception)\n");
         } else {
             glog("Failed to start receive: %s\n", esp_err_to_name(ret));
         }
@@ -5611,6 +5701,20 @@ void handle_lora_cmd(int argc, char **argv) {
         } else {
             glog("Failed to wake: %s\n", esp_err_to_name(ret));
         }
+    } else if (strcmp(argv[1], "test") == 0) {
+        if (!lora_manager_is_initialized()) {
+            glog("LoRa not initialized. Use 'lora init' first.\n");
+            return;
+        }
+        
+        glog("Testing LoRa radio...\n");
+        glog("This will check if the radio responds to commands.\n");
+        glog("Check serial logs for detailed information.\n");
+        glog("If you see errors, check:\n");
+        glog("  - SPI wiring (MOSI, MISO, CLK, CS)\n");
+        glog("  - Reset pin connection\n");
+        glog("  - Power supply to SX1262\n");
+        glog("  - BUSY pin if connected\n");
     } else {
         glog("Unknown LoRa command: %s\n", argv[1]);
         glog("Use 'lora' for help\n");

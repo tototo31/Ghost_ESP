@@ -1,4 +1,5 @@
 #include "managers/lora_manager.h"
+#include "sdkconfig.h"
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
@@ -153,11 +154,16 @@ static esp_err_t sx1262_write_command(uint8_t command, uint8_t *data, uint8_t le
 
 // Read command
 static esp_err_t sx1262_read_command(uint8_t command, uint8_t *data, uint8_t length) {
-    uint8_t tx_buf[1] = {command};
+    uint8_t tx_buf[1 + length];
     uint8_t rx_buf[1 + length];
+    
+    // For read commands, we need to send command + dummy bytes
+    memset(tx_buf, 0, 1 + length);
+    tx_buf[0] = command;
     
     esp_err_t ret = sx1262_spi_transfer(tx_buf, rx_buf, 1 + length);
     if (ret == ESP_OK && data) {
+        // First byte is status, data starts at offset 1
         memcpy(data, &rx_buf[1], length);
     }
     return ret;
@@ -194,36 +200,74 @@ static void IRAM_ATTR dio1_isr_handler(void *arg) {
 // RX task
 static void lora_rx_task(void *arg) {
     uint8_t dummy;
-    uint16_t irq_status;
+    uint16_t irq_status = 0;
     uint8_t packet_status[3];
-    uint8_t buffer[256];
     uint8_t rx_length;
+    TickType_t last_poll = xTaskGetTickCount();
+    
+    ESP_LOGI(TAG, "RX task started");
     
     while (s_lora.receiving) {
+        bool irq_triggered = false;
+        
+        // Check queue for DIO1 interrupt
         if (xQueueReceive(s_lora.rx_queue, &dummy, pdMS_TO_TICKS(100)) == pdTRUE) {
-            // Read IRQ status
-            sx1262_read_command(SX1262_REG_GET_IRQ_STATUS, (uint8_t *)&irq_status, 2);
+            irq_triggered = true;
+        }
+        
+        // Also poll IRQ status periodically (in case DIO1 isn't working)
+        TickType_t now = xTaskGetTickCount();
+        if (!irq_triggered && (now - last_poll) > pdMS_TO_TICKS(500)) {
+            last_poll = now;
+            // Poll IRQ status
+            uint8_t status_byte;
+            sx1262_read_command(SX1262_REG_GET_IRQ_STATUS, &status_byte, 1);
+            if (status_byte != 0) {
+                irq_triggered = true;
+            }
+        }
+        
+        if (irq_triggered) {
+            // Read IRQ status: command returns [Status] [IRQ_LSB] [IRQ_MSB]
+            uint8_t irq_cmd[1] = {SX1262_REG_GET_IRQ_STATUS};
+            uint8_t irq_buf[3];
+            sx1262_spi_transfer(irq_cmd, irq_buf, 3);
+            irq_status = (uint16_t)irq_buf[1] | ((uint16_t)irq_buf[2] << 8);
+            
+            ESP_LOGD(TAG, "IRQ status: 0x%04X", irq_status);
             
             if (irq_status & SX1262_IRQ_RX_DONE) {
+                ESP_LOGI(TAG, "RX_DONE IRQ received");
+                
                 // Get packet status
                 sx1262_read_command(SX1262_REG_GET_PACKET_STATUS, packet_status, 3);
                 
-                // Read packet length
-                sx1262_read_command(SX1262_REG_READ_BUFFER, buffer, 1);
-                rx_length = buffer[0];
+                // Read buffer: [CMD] [Offset] [Length] returns [Status] [Length] [Data...]
+                // First read offset 0, length 1 to get packet length
+                uint8_t read_cmd[3] = {SX1262_REG_READ_BUFFER, 0x00, 1}; // Offset 0, read 1 byte
+                uint8_t read_buf[4];
+                sx1262_spi_transfer(read_cmd, read_buf, 4);
+                rx_length = read_buf[2]; // Status at [1], length at [2]
+                
+                ESP_LOGI(TAG, "Packet length: %d", rx_length);
                 
                 if (rx_length > 0) {
-                    // Read packet data
-                    sx1262_read_command(SX1262_REG_READ_BUFFER, buffer, rx_length + 1);
+                    // Read the actual packet data (offset 1, length rx_length)
+                    uint8_t read_data_cmd[3] = {SX1262_REG_READ_BUFFER, 0x01, rx_length};
+                    uint8_t read_data_buf[3 + rx_length];
+                    sx1262_spi_transfer(read_data_cmd, read_data_buf, 3 + rx_length);
                     
                     lora_packet_t packet;
                     packet.length = rx_length;
-                    memcpy(packet.data, &buffer[1], rx_length);
+                    memcpy(packet.data, &read_data_buf[2], rx_length); // Data starts after status byte
                     packet.rssi = -(int16_t)packet_status[0] / 2;
                     packet.snr = (int8_t)packet_status[1] / 4.0f;
-                    packet.frequency_error = 0; // Would need additional register read
+                    packet.frequency_error = 0;
                     
                     s_lora.last_packet = packet;
+                    
+                    ESP_LOGI(TAG, "Received packet: RSSI=%d, SNR=%.1f, Len=%d", 
+                             packet.rssi, packet.snr, packet.length);
                     
                     if (s_lora.rx_callback) {
                         s_lora.rx_callback(&packet);
@@ -231,21 +275,35 @@ static void lora_rx_task(void *arg) {
                 }
                 
                 // Clear IRQ and restart RX
-                sx1262_write_command(SX1262_REG_CLEAR_IRQ_STATUS, (uint8_t *)&irq_status, 2);
+                uint8_t clear_irq[3] = {SX1262_REG_CLEAR_IRQ_STATUS, 
+                                       (uint8_t)(irq_status & 0xFF), 
+                                       (uint8_t)((irq_status >> 8) & 0xFF)};
+                sx1262_write_command(SX1262_REG_CLEAR_IRQ_STATUS, &clear_irq[1], 2);
                 sx1262_write_command(SX1262_REG_SET_RX, (uint8_t[]){0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, 7);
             }
             
             if (irq_status & SX1262_IRQ_TX_DONE) {
+                ESP_LOGI(TAG, "TX_DONE IRQ received");
                 s_lora.tx_done = true;
                 if (s_lora.tx_sem) {
                     xSemaphoreGive(s_lora.tx_sem);
                 }
-                sx1262_write_command(SX1262_REG_CLEAR_IRQ_STATUS, (uint8_t *)&irq_status, 2);
+                uint8_t clear_irq[3] = {SX1262_REG_CLEAR_IRQ_STATUS, 
+                                       (uint8_t)(irq_status & 0xFF), 
+                                       (uint8_t)((irq_status >> 8) & 0xFF)};
+                sx1262_write_command(SX1262_REG_CLEAR_IRQ_STATUS, &clear_irq[1], 2);
             }
             
             if (irq_status & (SX1262_IRQ_CRC_ERROR | SX1262_IRQ_HEADER_ERROR | SX1262_IRQ_RX_TIMEOUT)) {
+                ESP_LOGW(TAG, "RX error: CRC=%d, Header=%d, Timeout=%d", 
+                         !!(irq_status & SX1262_IRQ_CRC_ERROR),
+                         !!(irq_status & SX1262_IRQ_HEADER_ERROR),
+                         !!(irq_status & SX1262_IRQ_RX_TIMEOUT));
                 // Clear error and restart RX
-                sx1262_write_command(SX1262_REG_CLEAR_IRQ_STATUS, (uint8_t *)&irq_status, 2);
+                uint8_t clear_irq[3] = {SX1262_REG_CLEAR_IRQ_STATUS, 
+                                       (uint8_t)(irq_status & 0xFF), 
+                                       (uint8_t)((irq_status >> 8) & 0xFF)};
+                sx1262_write_command(SX1262_REG_CLEAR_IRQ_STATUS, &clear_irq[1], 2);
                 if (s_lora.receiving) {
                     sx1262_write_command(SX1262_REG_SET_RX, (uint8_t[]){0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, 7);
                 }
@@ -253,6 +311,7 @@ static void lora_rx_task(void *arg) {
         }
     }
     
+    ESP_LOGI(TAG, "RX task exiting");
     vTaskDelete(NULL);
 }
 
@@ -263,8 +322,32 @@ esp_err_t lora_manager_init(const lora_config_t *config) {
         return ESP_OK;
     }
     
+    // If no config provided, try to use menuconfig values
     if (!config) {
+#ifdef CONFIG_LORA_ENABLED
+        lora_config_t default_config = {0};
+        default_config.spi_mosi_pin = (gpio_num_t)CONFIG_LORA_SPI_MOSI_PIN;
+        default_config.spi_miso_pin = (gpio_num_t)CONFIG_LORA_SPI_MISO_PIN;
+        default_config.spi_clk_pin = (gpio_num_t)CONFIG_LORA_SPI_CLK_PIN;
+        default_config.spi_cs_pin = (gpio_num_t)CONFIG_LORA_SPI_CS_PIN;
+        default_config.reset_pin = (CONFIG_LORA_RESET_PIN >= 0) ? (gpio_num_t)CONFIG_LORA_RESET_PIN : GPIO_NUM_NC;
+        default_config.busy_pin = (CONFIG_LORA_BUSY_PIN >= 0) ? (gpio_num_t)CONFIG_LORA_BUSY_PIN : GPIO_NUM_NC;
+        default_config.dio1_pin = (CONFIG_LORA_DIO1_PIN >= 0) ? (gpio_num_t)CONFIG_LORA_DIO1_PIN : GPIO_NUM_NC;
+        default_config.spi_host = SPI2_HOST;
+        default_config.frequency_hz = CONFIG_LORA_FREQUENCY_HZ;
+        default_config.spreading_factor = CONFIG_LORA_SPREADING_FACTOR;
+        default_config.bandwidth = CONFIG_LORA_BANDWIDTH;
+        default_config.coding_rate = CONFIG_LORA_CODING_RATE;
+        default_config.tx_power = CONFIG_LORA_TX_POWER;
+        default_config.crc_enabled = true;
+        default_config.implicit_header = false;
+        default_config.preamble_length = 8;
+        config = &default_config;
+        ESP_LOGI(TAG, "Using menuconfig defaults for LoRa initialization");
+#else
+        ESP_LOGE(TAG, "LoRa not enabled in menuconfig and no config provided");
         return ESP_ERR_INVALID_ARG;
+#endif
     }
     
     memcpy(&s_lora.config, config, sizeof(lora_config_t));
@@ -564,21 +647,38 @@ esp_err_t lora_manager_start_receive(void) {
     }
     
     if (s_lora.receiving) {
+        ESP_LOGW(TAG, "Already receiving");
         return ESP_OK;
     }
     
     s_lora.receiving = true;
     
     // Clear IRQ status
-    uint16_t irq_mask = 0xFFFF;
-    sx1262_write_command(SX1262_REG_CLEAR_IRQ_STATUS, (uint8_t *)&irq_mask, 2);
+    uint8_t clear_irq[3] = {SX1262_REG_CLEAR_IRQ_STATUS, 0xFF, 0xFF};
+    sx1262_write_command(SX1262_REG_CLEAR_IRQ_STATUS, &clear_irq[1], 2);
     
     // Start RX task
-    xTaskCreate(lora_rx_task, "lora_rx", 4096, NULL, 5, &s_lora.rx_task_handle);
+    BaseType_t ret = xTaskCreate(lora_rx_task, "lora_rx", 4096, NULL, 5, &s_lora.rx_task_handle);
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create RX task");
+        s_lora.receiving = false;
+        return ESP_ERR_NO_MEM;
+    }
     
-    // Set RX mode
-    uint8_t rx_params[7] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}; // Continuous RX
-    return sx1262_write_command(SX1262_REG_SET_RX, rx_params, 7);
+    vTaskDelay(pdMS_TO_TICKS(10)); // Give task time to start
+    
+    // Set RX mode with timeout (0x000000 = continuous RX)
+    uint8_t rx_params[7] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    esp_err_t err = sx1262_write_command(SX1262_REG_SET_RX, rx_params, 7);
+    
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "RX mode started");
+    } else {
+        ESP_LOGE(TAG, "Failed to start RX mode: %s", esp_err_to_name(err));
+        s_lora.receiving = false;
+    }
+    
+    return err;
 }
 
 // Stop receive
@@ -605,54 +705,132 @@ bool lora_manager_is_receiving(void) {
 
 // Send packet (blocking)
 esp_err_t lora_manager_send_packet(const uint8_t *data, uint8_t length) {
-    if (!s_lora.initialized || !data || length == 0 || length > 255) {
+    if (!s_lora.initialized || !data || length == 0) {
         return ESP_ERR_INVALID_ARG;
     }
+    
+    ESP_LOGI(TAG, "Sending packet, length=%d", length);
     
     // Stop RX if active
     bool was_receiving = s_lora.receiving;
     if (was_receiving) {
         lora_manager_stop_receive();
+        vTaskDelay(pdMS_TO_TICKS(50)); // Wait for RX task to stop
     }
+    
+    // Put in standby first
+    sx1262_write_command(SX1262_REG_SET_STANDBY, (uint8_t[]){SX1262_STANDBY_XOSC}, 1);
+    vTaskDelay(pdMS_TO_TICKS(10));
     
     // Clear IRQ
-    uint16_t irq_mask = 0xFFFF;
-    sx1262_write_command(SX1262_REG_CLEAR_IRQ_STATUS, (uint8_t *)&irq_mask, 2);
+    uint8_t clear_irq[3] = {SX1262_REG_CLEAR_IRQ_STATUS, 0xFF, 0xFF};
+    sx1262_write_command(SX1262_REG_CLEAR_IRQ_STATUS, &clear_irq[1], 2);
     
-    // Write packet to buffer
-    uint8_t write_buf[1 + length];
-    write_buf[0] = 0; // Offset
-    memcpy(&write_buf[1], data, length);
-    sx1262_write_command(SX1262_REG_WRITE_BUFFER, write_buf, 1 + length);
-    
-    // Set packet length
-    uint8_t packet_params[6];
-    sx1262_read_command(SX1262_REG_SET_PACKET_PARAMS, packet_params, 6);
-    packet_params[3] = length;
-    sx1262_write_command(SX1262_REG_SET_PACKET_PARAMS, packet_params, 6);
-    
-    // Start TX
-    s_lora.tx_done = false;
-    uint8_t tx_params[3] = {0x00, 0x00, 0x00}; // No timeout
-    sx1262_write_command(SX1262_REG_SET_TX, tx_params, 3);
-    
-    // Wait for TX done
-    if (xSemaphoreTake(s_lora.tx_sem, pdMS_TO_TICKS(5000)) != pdTRUE) {
-        ESP_LOGW(TAG, "TX timeout");
-        return ESP_ERR_TIMEOUT;
+    // Write packet to buffer: [CMD] [Offset] [Data...]
+    uint8_t write_buf[1 + 1 + length];
+    write_buf[0] = SX1262_REG_WRITE_BUFFER;
+    write_buf[1] = 0; // Offset
+    memcpy(&write_buf[2], data, length);
+    esp_err_t ret = sx1262_spi_transfer(write_buf, NULL, 1 + 1 + length);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to write buffer: %s", esp_err_to_name(ret));
+        if (was_receiving) lora_manager_start_receive();
+        return ret;
     }
+    
+    // Set packet length in packet params
+    uint8_t packet_params[6];
+    // Read current params first
+    uint8_t read_params_cmd[1] = {SX1262_REG_SET_PACKET_PARAMS};
+    uint8_t read_params_buf[7];
+    sx1262_spi_transfer(read_params_cmd, read_params_buf, 7);
+    memcpy(packet_params, &read_params_buf[1], 6);
+    
+    // Update payload length
+    packet_params[3] = length;
+    
+    // Write updated params
+    uint8_t write_params_buf[7];
+    write_params_buf[0] = SX1262_REG_SET_PACKET_PARAMS;
+    memcpy(&write_params_buf[1], packet_params, 6);
+    ret = sx1262_spi_transfer(write_params_buf, NULL, 7);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set packet params: %s", esp_err_to_name(ret));
+        if (was_receiving) lora_manager_start_receive();
+        return ret;
+    }
+    
+    // Start TX with no timeout (continuous until done)
+    uint8_t tx_params[4] = {SX1262_REG_SET_TX, 0x00, 0x00, 0x00};
+    ret = sx1262_spi_transfer(tx_params, NULL, 4);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start TX: %s", esp_err_to_name(ret));
+        if (was_receiving) lora_manager_start_receive();
+        return ret;
+    }
+    
+    ESP_LOGI(TAG, "TX started, waiting for completion...");
+    
+    // Poll for TX_DONE (since RX task might not be running)
+    TickType_t start_time = xTaskGetTickCount();
+    TickType_t timeout = pdMS_TO_TICKS(10000); // 10 second timeout
+    
+    while ((xTaskGetTickCount() - start_time) < timeout) {
+        vTaskDelay(pdMS_TO_TICKS(10)); // Small delay between polls
+        
+        // Read IRQ status
+        uint8_t irq_cmd[1] = {SX1262_REG_GET_IRQ_STATUS};
+        uint8_t irq_buf[3];
+        ret = sx1262_spi_transfer(irq_cmd, irq_buf, 3);
+        if (ret != ESP_OK) {
+            continue;
+        }
+        
+        uint16_t irq_status = (uint16_t)irq_buf[1] | ((uint16_t)irq_buf[2] << 8);
+        
+        if (irq_status & SX1262_IRQ_TX_DONE) {
+            ESP_LOGI(TAG, "TX_DONE received");
+            // Clear IRQ
+            uint8_t clear_cmd[3] = {SX1262_REG_CLEAR_IRQ_STATUS, 
+                                   (uint8_t)(irq_status & 0xFF), 
+                                   (uint8_t)((irq_status >> 8) & 0xFF)};
+            sx1262_write_command(SX1262_REG_CLEAR_IRQ_STATUS, &clear_cmd[1], 2);
+            
+            // Restart RX if it was active
+            if (was_receiving) {
+                lora_manager_start_receive();
+            }
+            
+            return ESP_OK;
+        }
+        
+        if (irq_status & (SX1262_IRQ_CRC_ERROR | SX1262_IRQ_HEADER_ERROR)) {
+            ESP_LOGW(TAG, "TX error detected: 0x%04X", irq_status);
+            uint8_t clear_cmd[3] = {SX1262_REG_CLEAR_IRQ_STATUS, 
+                                   (uint8_t)(irq_status & 0xFF), 
+                                   (uint8_t)((irq_status >> 8) & 0xFF)};
+            sx1262_write_command(SX1262_REG_CLEAR_IRQ_STATUS, &clear_cmd[1], 2);
+            if (was_receiving) lora_manager_start_receive();
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+    }
+    
+    ESP_LOGW(TAG, "TX timeout - no TX_DONE received");
+    
+    // Put back in standby
+    sx1262_write_command(SX1262_REG_SET_STANDBY, (uint8_t[]){SX1262_STANDBY_XOSC}, 1);
     
     // Restart RX if it was active
     if (was_receiving) {
         lora_manager_start_receive();
     }
     
-    return ESP_OK;
+    return ESP_ERR_TIMEOUT;
 }
 
 // Send packet (async)
 esp_err_t lora_manager_send_packet_async(const uint8_t *data, uint8_t length) {
-    if (!s_lora.initialized || !data || length == 0 || length > 255) {
+    if (!s_lora.initialized || !data || length == 0) {
         return ESP_ERR_INVALID_ARG;
     }
     

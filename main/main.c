@@ -18,6 +18,9 @@
 #include "driver/gpio.h"
 #include "esp_heap_caps.h"
 #include "managers/usb_keyboard_manager.h"
+#ifdef CONFIG_LORA_ENABLED
+#include "managers/lora_manager.h"
+#endif
 
 #ifdef CONFIG_WITH_ETHERNET
 // TODO
@@ -264,6 +267,18 @@ void app_main(void) {
 
     ESP_LOGI(TAG, "Build config used: %s", CONFIG_BUILD_CONFIG_TEMPLATE);
     printf("Build Name: %s\n", CONFIG_BUILD_CONFIG_TEMPLATE);
+
+#ifdef CONFIG_LORA_AUTO_INIT
+    ESP_LOGI(TAG, "Auto-initializing LoRa from menuconfig...");
+    MEASURE_INIT_RAM("LoRa Manager", {
+        esp_err_t lora_ret = lora_manager_init(NULL);
+        if (lora_ret == ESP_OK) {
+            ESP_LOGI(TAG, "LoRa initialized from menuconfig");
+        } else {
+            ESP_LOGW(TAG, "LoRa auto-init failed: %s", esp_err_to_name(lora_ret));
+        }
+    });
+#endif
 
     size_t free_heap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
     size_t total_heap = heap_caps_get_total_size(MALLOC_CAP_8BIT);

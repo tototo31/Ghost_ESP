@@ -673,4 +673,113 @@ menu "Ghost ESP Options"
     
     endmenu
     
+    menu "LoRa (SX1262) Configuration"
+    
+    config LORA_ENABLED
+        bool "Enable LoRa (SX1262) Support"
+        default n
+        help
+            Enable support for SX1262 LoRa radio module.
+    
+    config LORA_SPI_MOSI_PIN
+        int "LoRa SPI MOSI Pin"
+        default 23
+        depends on LORA_ENABLED
+        help
+            GPIO pin for LoRa SPI MOSI (Master Out Slave In).
+    
+    config LORA_SPI_MISO_PIN
+        int "LoRa SPI MISO Pin"
+        default 19
+        depends on LORA_ENABLED
+        help
+            GPIO pin for LoRa SPI MISO (Master In Slave Out).
+    
+    config LORA_SPI_CLK_PIN
+        int "LoRa SPI CLK Pin"
+        default 18
+        depends on LORA_ENABLED
+        help
+            GPIO pin for LoRa SPI Clock.
+            IMPORTANT: Do not use leading zeros! Use 9 not 09, use 8 not 08.
+    
+    config LORA_SPI_CS_PIN
+        int "LoRa SPI CS Pin"
+        default 5
+        depends on LORA_ENABLED
+        help
+            GPIO pin for LoRa SPI Chip Select.
+            IMPORTANT: Do not use leading zeros! Use 9 not 09, use 8 not 08.
+    
+    config LORA_RESET_PIN
+        int "LoRa Reset Pin (-1 to disable)"
+        default -1
+        depends on LORA_ENABLED
+        help
+            GPIO pin for LoRa Reset. Set to -1 if not connected.
+    
+    config LORA_BUSY_PIN
+        int "LoRa Busy Pin (-1 to disable)"
+        default -1
+        depends on LORA_ENABLED
+        help
+            GPIO pin for LoRa Busy signal. Set to -1 if not connected.
+    
+    config LORA_DIO1_PIN
+        int "LoRa DIO1 Pin (-1 to disable)"
+        default -1
+        depends on LORA_ENABLED
+        help
+            GPIO pin for LoRa DIO1 interrupt. Set to -1 if not connected.
+            Recommended for interrupt-based packet reception.
+    
+    config LORA_FREQUENCY_HZ
+        int "LoRa Default Frequency (Hz)"
+        default 915000000
+        depends on LORA_ENABLED
+        help
+            Default frequency in Hz (e.g., 915000000 for 915 MHz, 906875000 for 906.875 MHz).
+    
+    config LORA_SPREADING_FACTOR
+        int "LoRa Default Spreading Factor"
+        default 7
+        range 6 12
+        depends on LORA_ENABLED
+        help
+            Default spreading factor (6-12). Higher values = longer range, slower data rate.
+    
+    config LORA_BANDWIDTH
+        int "LoRa Default Bandwidth"
+        default 7
+        range 0 9
+        depends on LORA_ENABLED
+        help
+            Default bandwidth (0=7.8kHz, 7=125kHz, 9=500kHz).
+    
+    config LORA_CODING_RATE
+        int "LoRa Default Coding Rate"
+        default 1
+        range 1 4
+        depends on LORA_ENABLED
+        help
+            Default coding rate (1=4/5, 2=4/6, 3=4/7, 4=4/8).
+    
+    config LORA_TX_POWER
+        int "LoRa Default TX Power (dBm)"
+        default 14
+        range 0 22
+        depends on LORA_ENABLED
+        help
+            Default TX power in dBm (0-22).
+    
+    config LORA_AUTO_INIT
+        bool "Auto-initialize LoRa on boot"
+        default n
+        depends on LORA_ENABLED
+        help
+            Automatically initialize LoRa radio on boot using menuconfig settings.
+            If disabled, use 'lora init' command to initialize manually.
+    
+    endmenu
+    
 endmenu    
